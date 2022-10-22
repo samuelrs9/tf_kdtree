@@ -264,7 +264,7 @@ __device__ void insertAndShiftArrayRight(const T* source_arr, T* target_arr, con
  * @param dest Destination array for the computed squared distances
  */
 template <typename T, uint32_t dims>
-__device__ inline void compDists(const Vec<T, dims>& point, const Vec<T, dims>* ref_leaf, const size_t nr_ref, T* dest)
+__device__ inline void compDistsEuclidean(const Vec<T, dims>& point, const Vec<T, dims>* ref_leaf, const size_t nr_ref, T* dest)
 {
 	//2D indices
 	const int blockidx = blockIdx.x + blockIdx.y*gridDim.x;
@@ -273,9 +273,33 @@ __device__ inline void compDists(const Vec<T, dims>& point, const Vec<T, dims>* 
 
 	for(size_t i = tidx; i < nr_ref; i += block_size)
 	{
-		dest[i] = (point - ref_leaf[i]).squaredNorm();
+    dest[i] = (point - ref_leaf[i]).squaredNorm();
 	}
 }
+
+/**
+ * @brief Parallely computes the l-infinity distances between a single point and multiple other points
+ * 
+ * @tparam T Type of the points
+ * @tparam dims Dimensions of the points
+ * @param point The point for which all ref_leaf distances will be computed
+ * @param ref_leaf Points for which all point distances will be computed
+ * @param nr_ref Number of points in ref_leaf
+ * @param dest Destination array for the computed l-infinity distances
+ */
+ template <typename T, uint32_t dims>
+ __device__ inline void compDistsLInfinity(const Vec<T, dims>& point, const Vec<T, dims>* ref_leaf, const size_t nr_ref, T* dest)
+ {
+   //2D indices
+   const int blockidx = blockIdx.x + blockIdx.y*gridDim.x;
+   const int block_size = blockDim.x * blockDim.y; // * blockDim.z;
+   const int tidx = threadIdx.y * blockDim.x + threadIdx.x;
+ 
+   for(size_t i = tidx; i < nr_ref; i += block_size)
+   {
+     dest[i] = (point - ref_leaf[i]).template lpNorm<Eigen::Infinity>();
+   }
+ }
 
 /**
  * @brief Updates the current ordered KNN list, inserting a new point if its distance is smaller than any of the present distances

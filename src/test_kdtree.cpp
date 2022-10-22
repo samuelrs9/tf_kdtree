@@ -16,12 +16,13 @@
 #include "kdtree.hpp"
 #include "tf_kdtree.hpp"
  
-const int nr_points = 10000;
-const int dims = 3;
+const int nr_points = 1000;
+const int dims = 2;
 const int levels = 11;
 
-const int nr_query_points = 500;
+const int nr_query_points = 10;
 const point_i_knn_t knn = 20;
+const int metric = 0;
 
 typedef double test_T;
 
@@ -56,8 +57,9 @@ int main()
 
     std::vector<test_T> result_dists(nr_query_points*knn);
     std::vector<point_i_t> result_idx(nr_query_points*knn);
-    KDTreeKNNSearch<test_T, test_T, dims>(partition_info, 
-                    nr_query_points, reinterpret_cast<std::array<test_T, dims>*>(query_points.data()), result_dists.data(), result_idx.data(), knn);
+    KDTreeKNNSearch<test_T, test_T, dims>(partition_info, nr_query_points, 
+        reinterpret_cast<std::array<test_T, dims>*>(query_points.data()), 
+        result_dists.data(), result_idx.data(), knn, metric);
 
     //GPU Test
     PartitionInfoDevice<test_T, dims>* partition_info_d = copyPartitionToGPU<test_T, dims>(partition_info);
@@ -68,7 +70,7 @@ int main()
     test_T* query_points_d  = std::get<2>(tmp);
 
     KDTreeKNNGPUSearch<test_T, test_T, dims>(partition_info_d, nr_query_points, 
-        reinterpret_cast<std::array<test_T, dims>*>(query_points_d), result_dists_d, result_idx_d, knn);
+        reinterpret_cast<std::array<test_T, dims>*>(query_points_d), result_dists_d, result_idx_d, knn, 0);
 
     auto result_gpu = copyDataBackToHost(result_dists_d, result_idx_d, nr_query_points, knn);
     const auto result_dists_gpu = std::get<0>(result_gpu);

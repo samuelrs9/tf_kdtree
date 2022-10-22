@@ -61,10 +61,11 @@ void freePartitionFromGPU(PartitionInfoDevice<T, dims>* partition_info);
  * @param dist Pointer to a distance array on the devices with nr_query * nr_nns_searches elements, where the knn squared distances will be found after the call
  * @param idx Pointer to an index array on the devices with nr_query * nr_nns_searches elements, where the knn indices will be found after the call
  * @param nr_nns_searches Number of nearest neighbors to query (=k)
+ * @param metric distance metric
  */
 template
 <typename T, typename T_calc, dim_t dims>
 void KDTreeKNNGPUSearch(PartitionInfoDevice<T, dims>* partition_info,
-                    const point_i_t nr_query, 
-                    const std::array<T, dims>* points_query, T * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+                    const point_i_t nr_query, const std::array<T, dims>* points_query, T * dist, 
+                    point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
 #endif

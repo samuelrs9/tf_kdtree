@@ -12,17 +12,16 @@ const int local_dist_buf_size = 256;
 //TODO: Sort and break for possible additional speedup
 template
 <typename T, typename T_calc, dim_t dims>
-__device__ void compQuadrDistLeafPartitionBlockwise(const Vec<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
-									T* local_dist_buf,
-                                    PingPongBuffer<T>& best_dist_pp, PingPongBuffer<point_i_t>& best_knn_pp,
-									const point_i_knn_t nr_nns_searches, T& worst_dist)
+__device__ void compDistLeafPartitionBlockwise(const Vec<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
+	T* local_dist_buf,PingPongBuffer<T>& best_dist_pp, PingPongBuffer<point_i_t>& best_knn_pp,
+	const point_i_knn_t nr_nns_searches, T& worst_dist, const uint8_t metric)
 {
 	//printf("Before dereferencing\n");
 	//2D indices
 	const int block_size = blockDim.x * blockDim.y; // * blockDim.z;
 	const int tidx = threadIdx.y * blockDim.x + threadIdx.x;
 
-    /*printf("compQuadrDistLeafPartition: %x, ", partition_leaf.data);
+    /*printf("compDistLeafPartition: %x, ", partition_leaf.data);
     printf("%d, ", partition_leaf.nr_points);
 	printf("%d\n", partition_leaf.offset);*/
 	const Vec<T, dims>* partition_data = reinterpret_cast<Vec<T, dims>*>(partition_leaf.data);
@@ -36,9 +35,14 @@ __device__ void compQuadrDistLeafPartitionBlockwise(const Vec<T, dims>& point, c
 	{
 		const auto remaining_partition_size = partition_size - (buf_run_i * local_dist_buf_size);
 		const auto current_length = min(static_cast<int>(remaining_partition_size), local_dist_buf_size);
-		compDists<T, dims>(point, partition_data + (buf_run_i * local_dist_buf_size),
-				current_length,
-				local_dist_buf);
+		if (metric==0){
+		compDistsEuclidean<T, dims>(point, partition_data + (buf_run_i * local_dist_buf_size),
+				current_length,local_dist_buf);
+		}
+		if (metric==1){
+			compDistsLInfinity<T, dims>(point, partition_data + (buf_run_i * local_dist_buf_size),
+			current_length,local_dist_buf);
+		}
 		__syncthreads();
 		for(point_i_t ref_i = 0; ref_i < current_length; ref_i++)
 		{
@@ -180,7 +184,7 @@ void freePartitionFromGPU(PartitionInfoDevice<T, dims>* partition_info)
  */
 template <typename T, typename T_calc, dim_t dims>
 __device__ NodeDirection traverseTree(TreeTraversal<T, dims>& tree, 
-	const Vec<T, dims>& point, Vec<T, dims>& point_proj, const T current_worst_dist)
+	const Vec<T, dims>& point, Vec<T, dims>& point_proj, const T current_worst_dist, const uint8_t metric)
 {
 	//printf("traverseTree begin\n");
 	const NodeTag tag = tree.getCurrentTagBinary();
@@ -236,7 +240,7 @@ __device__ NodeDirection traverseTree(TreeTraversal<T, dims>& tree,
 			assert(!lower_than_median || tag == NodeTag::left_visited);
 			assert(lower_than_median || tag == NodeTag::right_visited);
 			tree.setCurrentNodeTagBinary(NodeTag::left_right_visited); //Either way we finish all nodes here
-			if(partitionNecessary<T, T_calc, dims>(point, point_proj, current_partition, current_worst_dist))                     
+			if(partitionNecessary<T, T_calc, dims>(point, point_proj, current_partition, current_worst_dist, metric))         
 			{
 				point_proj[current_axis] = current_partition.median;
 				return lower_than_median ? NodeDirection::right : NodeDirection::left;
@@ -254,10 +258,10 @@ __device__ NodeDirection traverseTree(TreeTraversal<T, dims>& tree,
 
 template <typename T, typename T_calc, dim_t dims>
 inline __device__ void findNextLeaf(TreeTraversal<T, dims>& tree, 
-	const Vec<T, dims>& point, Vec<T, dims>& point_proj, const T current_worst_dist)
+	const Vec<T, dims>& point, Vec<T, dims>& point_proj, const T current_worst_dist, const uint8_t metric)
 {
 	NodeDirection new_dir;
-	while((new_dir = traverseTree<T, T_calc, dims>(tree, point, point_proj, current_worst_dist)) != NodeDirection::finished)
+	while((new_dir = traverseTree<T, T_calc, dims>(tree, point, point_proj, current_worst_dist, metric)) != NodeDirection::finished)
 	{
 		switch(new_dir)
 		{
@@ -273,13 +277,14 @@ inline __device__ void findNextLeaf(TreeTraversal<T, dims>& tree,
 
 const int max_nr_nodes = 2048*4;
 static_assert(max_nr_nodes % 4 == 0, "Alignment off, since 4 nodes fit into a byte");
-const int max_nr_nns_searches = 128;
+const int max_nr_nns_searches = 512;
 
 template 
 <typename T, typename T_calc, dim_t dims>
 __global__ void KDTreeKernel(PartitionInfoDevice<T, dims>* partition_info,
 	const point_i_t nr_query, 
-	const Vec<T, dims>* points_query, T* all_best_dists_d, point_i_knn_t* all_best_i_d, const point_i_knn_t nr_nns_searches)
+	const Vec<T, dims>* points_query, T* all_best_dists_d, point_i_knn_t* all_best_i_d, 
+	const point_i_knn_t nr_nns_searches, const uint8_t metric)
 {
 	assert(nr_nns_searches <= partition_info->nr_points);
 
@@ -349,7 +354,7 @@ __global__ void KDTreeKernel(PartitionInfoDevice<T, dims>* partition_info,
 		//Fetch the current leaf and descent
 		__syncthreads();
 		if(tidx == 0)
-			findNextLeaf<T, T_calc, dims>(*tree, point, point_proj[0], worst_dist);
+			findNextLeaf<T, T_calc, dims>(*tree, point, point_proj[0], worst_dist, metric);
 		__syncthreads();
 
 		do
@@ -363,12 +368,12 @@ __global__ void KDTreeKernel(PartitionInfoDevice<T, dims>* partition_info,
 			const auto leaf = (lower_than_median ? tree->getLeftLeaf() : tree->getRightLeaf());
 
 			//Now compute each leaf with all threads in the current block
-			compQuadrDistLeafPartitionBlockwise<T, T_calc, dims>(point, leaf, local_dist_buf, *best_dist_pp, best_knn_pp,
-					 nr_nns_searches, worst_dist);
+			compDistLeafPartitionBlockwise<T, T_calc, dims>(point, leaf, local_dist_buf, *best_dist_pp, best_knn_pp,
+					 nr_nns_searches, worst_dist, metric);
 
 			if(tidx == 0)
 			{
-				off_leaf_necessary[0] = partitionNecessary<T, T_calc, dims>(point, point_proj[0], current_partition, worst_dist);
+				off_leaf_necessary[0] = partitionNecessary<T, T_calc, dims>(point, point_proj[0], current_partition, worst_dist, metric);
 			}
 
 			__syncthreads();
@@ -377,13 +382,13 @@ __global__ void KDTreeKernel(PartitionInfoDevice<T, dims>* partition_info,
 				//printf("Off partition necessary\n");
 				const PartitionLeaf<T, dims>& leaf = (!lower_than_median ? tree->getLeftLeaf() : tree->getRightLeaf());
 				//printf("Comp Dist 2\n");
-				compQuadrDistLeafPartitionBlockwise<T, T_calc, dims>(point, leaf, local_dist_buf, *best_dist_pp, best_knn_pp,
-					nr_nns_searches, worst_dist);
+				compDistLeafPartitionBlockwise<T, T_calc, dims>(point, leaf, local_dist_buf, *best_dist_pp, best_knn_pp,
+					nr_nns_searches, worst_dist, metric);
 			}
 
 			//__syncthreads();
 			if(tidx == 0)
-				findNextLeaf<T, T_calc, dims>(*tree, point, point_proj[0], worst_dist);
+				findNextLeaf<T, T_calc, dims>(*tree, point, point_proj[0], worst_dist, metric);
 
 			__syncthreads();
 		}while(tree->getCurrentLevel() != 0);
@@ -406,8 +411,8 @@ __global__ void KDTreeKernel(PartitionInfoDevice<T, dims>* partition_info,
 template
 <typename T, typename T_calc, dim_t dims>
 void KDTreeKNNGPUSearch(PartitionInfoDevice<T, dims>* partition_info,
-                    const point_i_t nr_query, 
-                    const std::array<T, dims>* points_query, T * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches)
+    const point_i_t nr_query, const std::array<T, dims>* points_query, T * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric)
 {
 	//TODO: Dynamic implementation
 	/*if(partition_info->nr_partitions > max_partitions || partition_info->nr_leaves > max_leaves)
@@ -418,16 +423,16 @@ void KDTreeKNNGPUSearch(PartitionInfoDevice<T, dims>* partition_info,
 	if(nr_nns_searches > max_nr_nns_searches)
 		throw std::runtime_error("TODO: Maximum number of NNs searches currently restricted");
 
-	//gpuErrchk(cudaMemcpyAsync(partition_info_copy, partition_info, sizeof(PartitionInfoDevice<T, dims>), cudaMemcpyDeviceToDevice));
-	initArray<T><<<dim3(16, 16),dim3(32, 32)>>>(dist, INFINITY, nr_query*nr_nns_searches);
+	//gpuErrchk(cudaMemcpysync(partition_info_copy, partition_info, sizeof(PartitionInfoDevice<T, dims>), cudaMemcpyDeviceToDevice));
+	initArray<T><<<dim3(16,16),dim3(32,32)>>>(dist, INFINITY, nr_query*nr_nns_searches);
 
 	#ifndef NDEBUG
 	gpuErrchk( cudaPeekAtLastError() );
 	gpuErrchk( cudaDeviceSynchronize() );
 	#endif
 
-	dim3 grid_dims(32, 32);
-	dim3 block_dims(8, 8);
+	dim3 grid_dims(32,32);
+	dim3 block_dims(8,8);
 
 	/*#ifdef PROFILE_KDTREE
 	cudaEvent_t start, stop;
@@ -438,7 +443,7 @@ void KDTreeKNNGPUSearch(PartitionInfoDevice<T, dims>* partition_info,
 	#endif*/
 
 	const auto points_query_eig = reinterpret_cast<const Vec<T, dims>*>(points_query);
-	KDTreeKernel<T, T_calc, dims><<<grid_dims, block_dims>>>(partition_info, nr_query, points_query_eig, dist, idx, nr_nns_searches);
+	KDTreeKernel<T, T_calc, dims><<<grid_dims, block_dims>>>(partition_info, nr_query, points_query_eig, dist, idx, nr_nns_searches, metric);
 
 	#ifndef NDEBUG
 	gpuErrchk( cudaPeekAtLastError() );
@@ -453,34 +458,36 @@ void KDTreeKNNGPUSearch(PartitionInfoDevice<T, dims>* partition_info,
 	#endif*/
 }
 
-template void compQuadrDistLeafPartition<float, float, 3>(const std::array<float, 3>& point, const PartitionLeaf<float, 3>& partition_leaf,
-                                    float* best_dists, point_i_knn_t* best_idx,
-                                    const point_i_knn_t nr_nns_searches);
+template void compDistLeafPartition<float, float, 3>(const std::array<float, 3>& point, 
+	const PartitionLeaf<float, 3>& partition_leaf,float* best_dists, point_i_knn_t* best_idx,
+	const point_i_knn_t nr_nns_searches, const uint8_t metric);
                                     
-template void compQuadrDistLeafPartition<double, double, 3>(const std::array<double, 3>& point, const PartitionLeaf<double, 3>& partition_leaf,
-                                    double* best_dists, point_i_knn_t* best_idx,
-                                    const point_i_knn_t nr_nns_searches);
+template void compDistLeafPartition<double, double, 3>(const std::array<double, 3>& point, 
+	const PartitionLeaf<double, 3>& partition_leaf,double* best_dists, point_i_knn_t* best_idx,
+    const point_i_knn_t nr_nns_searches, const uint8_t metric);
 
 template void KDTreeKNNGPUSearch<float, float, 1>(PartitionInfoDevice<float, 1>* partition_info,
-                    const point_i_t nr_query, 
-                    const std::array<float, 1>* points_query, float * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+	const point_i_t nr_query, const std::array<float, 1>* points_query, float * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
 template void KDTreeKNNGPUSearch<double, double, 1>(PartitionInfoDevice<double, 1>* partition_info, 
-    const point_i_t nr_query, 
-    const std::array<double, 1>* points_query, double * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+    const point_i_t nr_query, const std::array<double, 1>* points_query, double * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
 	
 template void KDTreeKNNGPUSearch<float, float, 2>(PartitionInfoDevice<float, 2>* partition_info,
-		const point_i_t nr_query, 
-		const std::array<float, 2>* points_query, float * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+	const point_i_t nr_query, const std::array<float, 2>* points_query, float * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
+
 template void KDTreeKNNGPUSearch<double, double, 2>(PartitionInfoDevice<double, 2>* partition_info,
-	const point_i_t nr_query, 
-	const std::array<double, 2>* points_query, double * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+	const point_i_t nr_query, const std::array<double, 2>* points_query, double * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
 
 template void KDTreeKNNGPUSearch<float, float, 3>(PartitionInfoDevice<float, 3>* partition_info,
-	const point_i_t nr_query, 
-	const std::array<float, 3>* points_query, float * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+	const point_i_t nr_query, const std::array<float, 3>* points_query, float * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
+
 template void KDTreeKNNGPUSearch<double, double, 3>(PartitionInfoDevice<double, 3>* partition_info,
-	const point_i_t nr_query, 
-	const std::array<double, 3>* points_query, double * dist, point_i_t* idx, const point_i_knn_t nr_nns_searches);
+	const point_i_t nr_query, const std::array<double, 3>* points_query, double * dist, 
+	point_i_t* idx, const point_i_knn_t nr_nns_searches, const uint8_t metric);
 
 template PartitionInfoDevice<float, 1>* copyPartitionToGPU(const PartitionInfo<float, 1>& partition_info);
 template PartitionInfoDevice<float, 2>* copyPartitionToGPU(const PartitionInfo<float, 2>& partition_info);

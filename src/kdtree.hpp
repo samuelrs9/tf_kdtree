@@ -407,12 +407,12 @@ inline T compMedian(const std::array<T, dims>* points_ordered, const point_i_t n
  */
 template <typename T, dim_t dims>
 void createPartitionRecursive(
-                                std::vector<Partition<T>>& partitions,
-                                std::vector<PartitionLeaf<T, dims>>& leaves,
-                                const tree_ind_t lin_ind,
-                                std::array<T, dims>* structured_points, 
-                                point_i_t* shuffled_inds, const point_i_t nr_points,
-                                const int levels, const dim_t current_axis, const point_i_t arr_offset)
+    std::vector<Partition<T>>& partitions,
+    std::vector<PartitionLeaf<T, dims>>& leaves,
+    const tree_ind_t lin_ind,
+    std::array<T, dims>* structured_points, 
+    point_i_t* shuffled_inds, const point_i_t nr_points,
+    const int levels, const dim_t current_axis, const point_i_t arr_offset)
 {
     typedef TreeTraversal<T, dims> tree_t;
     if(nr_points == 0)
@@ -482,8 +482,7 @@ void createPartitionRecursive(
  * @return PartitionInfo<T, dims> The PartitionInfo containing the information regarding the KD-Tree
  */
 template <typename T, dim_t dims>
-PartitionInfo<T, dims> createKDTree(const T* points_flat, 
-                                        const point_i_t nr_points, const int levels)
+PartitionInfo<T, dims> createKDTree(const T* points_flat, const point_i_t nr_points, const int levels)
 {
     assert(levels >= 1);
     std::vector<PartitionLeaf<T, dims>> leaves; //(compTotalNrLeaves(levels));
@@ -496,8 +495,7 @@ PartitionInfo<T, dims> createKDTree(const T* points_flat,
     //std::vector<std::array<T, dims>> structured_points(points, points + nr_points);
     std::array<T, dims>* structured_points = new std::array<T, dims>[nr_points];
     std::copy(points, points + nr_points, structured_points);
-    createPartitionRecursive<T, dims>(partitions, leaves, 0,
-                                        structured_points,
+    createPartitionRecursive<T, dims>(partitions, leaves, 0, structured_points,
                                         orig_inds, nr_points, levels-1, 0, 0);
     //partitions[0] = new MainPartition<T, dims>(std::move(partitions[0]));
     /*MainPartition<T, dims> main_partition = MainPartition<T, dims>(std::move(
@@ -563,6 +561,30 @@ inline CUDA_HOSTDEV T compQuadrSum(const std::array<T, dims>& x)
 }
 
 /**
+ * @brief Computes the absolute maximum element
+ * 
+ * @tparam T Type of the array
+ * @tparam dims Number of points
+ * @param x Array of values
+ * @return T max(x)
+ */
+template
+<typename T, dim_t dims>
+inline CUDA_HOSTDEV T compAbsMax(const std::array<T, dims>& x)
+{
+	T absMax = static_cast<T>(fabsf(x[0]));
+	for (dim_t dim_i = 0; dim_i < dims; dim_i++) 
+    {		
+        T value = static_cast<T>(fabsf(x[dim_i]));
+		if (absMax < value)
+        {
+			absMax = value;
+		}
+	}
+	return absMax;
+}
+
+/**
  * @brief Computes the element-wise quadratic euclidean distance between lhs and rhs, i.e. ||lhs_i - rhs_i||
  * 
  * @tparam T Type of the array
@@ -581,6 +603,24 @@ inline CUDA_HOSTDEV T_calc compQuadrDist(const std::array<T, dims>& lhs, const s
 }
 
 /**
+ * @brief Computes the element-wise l-infinity distance between lhs and rhs, i.e. ||lhs_i - rhs_i||
+ * 
+ * @tparam T Type of the array
+ * @tparam T_calc Type of the calculation
+ * @tparam dims Dimensionality of the points
+ * @param lhs Left-hand-side of the calculation
+ * @param lhs Right-hand-side of the calculation
+ * @return T_calc ||lhs_i - rhs_i||
+ */
+template
+<typename T, typename T_calc, dim_t dims>
+inline CUDA_HOSTDEV T_calc compLInfinityDist(const std::array<T, dims>& lhs, const std::array<T, dims>& rhs)
+{
+    std::array<T_calc, dims> diffs = compDiff<T, T_calc, dims>(lhs, rhs);
+    return compAbsMax<T_calc, dims>(diffs);
+}
+
+/**
  * @brief Computes the distance to the projected point onto the median of the current dimension. This is used to see if we need to further
  *        traverse the tree or already found the KNNs, which is true in case the projection is farther away than
  *        the distance to the current KNN most far away.
@@ -595,7 +635,7 @@ inline CUDA_HOSTDEV T_calc compQuadrDist(const std::array<T, dims>& lhs, const s
  */
 template
 <typename T, dim_t dims>
-inline CUDA_HOSTDEV T projectionDist(const std::array<T, dims>& point, const std::array<T, dims>& point_proj, const Partition<T>& partition)
+inline CUDA_HOSTDEV T projectionDistEuclidean(const std::array<T, dims>& point, const std::array<T, dims>& point_proj, const Partition<T>& partition)
 {
     std::array<T, dims> proj_vec = compDiff<T, T, dims>(point_proj, point);
     const dim_t current_axis = partition.axis_split;
@@ -604,11 +644,34 @@ inline CUDA_HOSTDEV T projectionDist(const std::array<T, dims>& point, const std
 }
 
 /**
+ * @brief Computes the distance to the projected point onto the median of the current dimension. This is used to see if we need to further
+ *        traverse the tree or already found the KNNs, which is true in case the projection is farther away than
+ *        the distance to the current KNN most far away.
+ * 
+ * @tparam T Type of the array
+ * @tparam dims Dimensionality of the points
+ * @param point Original point for which to search the KNN
+ * @param point_proj The original point, already projected on possible multiple previous dimensions. Note that in the simplest case
+ *                   this is equal to point.
+ * @param Partition<T> Node information of the current axis/dimension split that we want to compute the projection in
+ * @return T Resulting distance of the current projection
+ */
+template
+<typename T, dim_t dims>
+inline CUDA_HOSTDEV T projectionDistLInfinity(const std::array<T, dims>& point, const std::array<T, dims>& point_proj, const Partition<T>& partition)
+{
+    std::array<T, dims> proj_vec = compDiff<T, T, dims>(point_proj, point);
+    const dim_t current_axis = partition.axis_split;
+    proj_vec[current_axis] += partition.median - point_proj[current_axis];
+    return compAbsMax<T, dims>(proj_vec);
+}
+
+/**
  * @brief See \ref projectionDist 'projectionDist'
  */
 template
 <typename T, dim_t dims>
-inline CUDA_HOSTDEV T projectionDist(const Vec<T, dims>& point, const Vec<T, dims>& point_proj, const Partition<T>& partition)
+inline CUDA_HOSTDEV T projectionDistEuclidean(const Vec<T, dims>& point, const Vec<T, dims>& point_proj, const Partition<T>& partition)
 {
     Vec<T, dims> proj_vec = (point_proj - point);
     const dim_t current_axis = partition.axis_split;
@@ -617,15 +680,37 @@ inline CUDA_HOSTDEV T projectionDist(const Vec<T, dims>& point, const Vec<T, dim
 }
 
 /**
+ * @brief See \ref projectionDist 'projectionDist'
+ */
+template
+<typename T, dim_t dims>
+inline CUDA_HOSTDEV T projectionDistLInfinity(const Vec<T, dims>& point, const Vec<T, dims>& point_proj, const Partition<T>& partition)
+{
+    Vec<T, dims> proj_vec = (point_proj - point);
+    const dim_t current_axis = partition.axis_split;
+    proj_vec[current_axis] += partition.median - point_proj[current_axis];
+    return proj_vec.template lpNorm<Eigen::Infinity>();
+}
+
+/**
  * @brief Checks if we need to compute the distances to any of the points in the partition. Achieved by using \ref projectionDist 'projectionDist'.
  */
 template
 <typename T, typename T_calc, dim_t dims>
 inline CUDA_HOSTDEV bool partitionNecessary(const std::array<T, dims>& point, const std::array<T, dims>& point_proj, 
-                                const Partition<T>& partition, const T current_worst_dist)
+    const Partition<T>& partition, const T current_worst_dist, const uint8_t metric)
 {
-    const auto proj_dist = projectionDist<T, dims>(point, point_proj, partition);
-    return proj_dist < current_worst_dist;
+
+    if (metric==0) 
+    {
+        const auto proj_dist = projectionDistEuclidean<T, dims>(point, point_proj, partition);
+        return proj_dist < current_worst_dist;
+    }
+    if (metric==1) 
+    {
+        const auto proj_dist = projectionDistLInfinity<T, dims>(point, point_proj, partition);
+        return proj_dist < current_worst_dist;
+    }    
 }
 
 /**
@@ -634,10 +719,18 @@ inline CUDA_HOSTDEV bool partitionNecessary(const std::array<T, dims>& point, co
 template
 <typename T, typename T_calc, dim_t dims>
 inline CUDA_HOSTDEV bool partitionNecessary(const Vec<T, dims>& point, const Vec<T, dims>& point_proj, 
-                                const Partition<T>& partition, const T current_worst_dist)
+    const Partition<T>& partition, const T current_worst_dist , const uint8_t metric)
 {
-    const auto proj_dist = projectionDist<T, dims>(point, point_proj, partition);
-    return proj_dist < current_worst_dist;
+    if (metric==0) 
+    {
+        const auto proj_dist = projectionDistEuclidean<T, dims>(point, point_proj, partition);
+        return proj_dist < current_worst_dist;
+    }
+    if (metric==1) 
+    {
+        const auto proj_dist = projectionDistLInfinity<T, dims>(point, point_proj, partition);
+        return proj_dist < current_worst_dist;
+    }    
 }
 
 /**
@@ -652,16 +745,24 @@ inline CUDA_HOSTDEV bool partitionNecessary(const Vec<T, dims>& point, const Vec
  */
 template
 <typename T, typename T_calc, dim_t dims>
-void compQuadrDistLeafPartition(const std::array<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
+void compDistLeafPartition(const std::array<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
                                     T* best_dists, point_i_knn_t* best_idx,
-									const point_i_knn_t nr_nns_searches)
+									const point_i_knn_t nr_nns_searches, const uint8_t metric)
 {
 	const std::array<T, dims>* partition_data = partition_leaf.data;
     const point_i_t partition_size = partition_leaf.nr_points;
 	const point_i_t partition_offset = partition_leaf.offset;
     for(point_i_t ref_i = 0; ref_i < partition_size; ref_i++)
     {
-        const T_calc dist = compQuadrDist<T, T_calc, dims>(point, partition_data[ref_i]);
+        T_calc dist = static_cast<T_calc>(0.0);
+        if (metric==0)
+        {
+            dist = compQuadrDist<T, T_calc, dims>(point, partition_data[ref_i]);
+        }
+        if (metric==1)
+        {
+            dist = compLInfinityDist<T, T_calc, dims>(point, partition_data[ref_i]);
+        }
         const auto insertion_idx = knnInsertionDynamic<T_calc>(dist, best_dists, nr_nns_searches);
         if(insertion_idx < nr_nns_searches)
         {
@@ -683,15 +784,15 @@ void compQuadrDistLeafPartition(const std::array<T, dims>& point, const Partitio
 
 
 /**
- * @brief See \ref compQuadrDistLeafPartition 'compQuadrDistLeafPartition'.
+ * @brief See \ref compDistLeafPartition 'compDistLeafPartition'.
  */
 template
 <typename T, typename T_calc, dim_t dims>
-CUDA_HOSTDEV void compQuadrDistLeafPartition(const Vec<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
+CUDA_HOSTDEV void compDistLeafPartition(const Vec<T, dims>& point, const PartitionLeaf<T, dims>& partition_leaf,
                                     T* best_dists, point_i_knn_t* best_idx,
-									const point_i_knn_t nr_nns_searches)
+									const point_i_knn_t nr_nns_searches, const uint8_t metric)
 {
-    //printf("compQuadrDistLeafPartition: %x, ", partition_leaf.data);
+    //printf("compDistLeafPartition: %x, ", partition_leaf.data);
     //printf("%d, ", partition_leaf.nr_points);
     //printf("%d\n", partition_leaf.offset);
 	const Vec<T, dims>* partition_data = reinterpret_cast<Vec<T, dims>*>(partition_leaf.data);
@@ -699,7 +800,13 @@ CUDA_HOSTDEV void compQuadrDistLeafPartition(const Vec<T, dims>& point, const Pa
 	const point_i_t partition_offset = partition_leaf.offset;
     for(point_i_t ref_i = 0; ref_i < partition_size; ref_i++)
     {
-        const T_calc dist = (point - partition_data[ref_i]).squaredNorm();
+        T_calc dist = static_cast<T_calc>(0.0);
+        if (metric==0) {
+            dist = (point - partition_data[ref_i]).squaredNorm();
+        }
+        if (metric==1) {        
+            dist = (point - partition_data[ref_i]).template lpNorm<Eigen::Infinity>();
+        }        
         const auto insertion_idx = knnInsertionDynamic<T_calc>(dist, best_dists, nr_nns_searches);
         if(insertion_idx < nr_nns_searches)
         {
@@ -720,7 +827,7 @@ CUDA_HOSTDEV void compQuadrDistLeafPartition(const Vec<T, dims>& point, const Pa
 }
 
 /**
- * @brief See \ref compQuadrDistLeafPartition 'compQuadrDistLeafPartition'.
+ * @brief See \ref compDistLeafPartition 'compDistLeafPartition'.
  */
 template
 <typename T, typename T_calc, dim_t dims>
@@ -729,21 +836,22 @@ void compQuadrDistPartition(const std::array<T, dims>& point, const PartitionLea
 									const point_i_knn_t nr_nns_searches);
 
 /**
- * @brief Recursively traverses the node and calls compQuadrDistLeafPartition on the leaves.
+ * @brief Recursively traverses the node and calls compDistLeafPartition on the leaves.
  */
 template
 <typename T, typename T_calc, dim_t dims>
-void compQuadrDistNode(const std::array<T, dims>& point, const Partition<T>& partition,
-                                    std::vector<T>& best_dists, std::vector<point_i_knn_t>& best_idx,
-                                    const int current_level, const std::array<T, dims>& point_proj, const point_i_knn_t nr_nns_searches);
+void compDistNode(const std::array<T, dims>& point, const Partition<T>& partition,
+    std::vector<T>& best_dists, std::vector<point_i_knn_t>& best_idx,
+    const int current_level, const std::array<T, dims>& point_proj, 
+    const point_i_knn_t nr_nns_searches, const uint8_t metric);
 
 /**
- * @brief Computes the KNN on the KD-Tree defined by partition_info. Iteratively calls compQuadrDistNode on the main node for each point in points_query.
- *        The resulting quadr. distances and indices of the KNNs will be stored in dist [M, K] in a C-ordering fashion.
+ * @brief Computes the KNN on the KD-Tree defined by partition_info. Iteratively calls compDistNode on the main node for each point in points_query.
+ *        The resulting distances and indices of the KNNs will be stored in dist [M, K] in a C-ordering fashion.
  */
 template
 <typename T, typename T_calc, dim_t dims>
-void KDTreeKNNSearch(PartitionInfo<T, dims>& partition_info,
-                    const point_i_t nr_query, 
-                    const std::array<T, dims>* points_query, T * dist, point_i_knn_t* idx, const point_i_knn_t nr_nns_searches);
+void KDTreeKNNSearch(PartitionInfo<T, dims>& partition_info,const point_i_t nr_query,
+                    const std::array<T, dims>* points_query, T * dist, point_i_knn_t* idx, 
+                    const point_i_knn_t nr_nns_searches, const uint8_t metric);
 

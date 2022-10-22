@@ -68,7 +68,7 @@ def buildKDTree(points_ref, levels=None, **kwargs):
       return _op_library.build_kd_tree(points_ref, levels=levels, **kwargs)
 
 
-def searchKDTree(points_query, metadata_address_kdtree, nr_nns_searches=1, shuffled_inds=None, **kwargs):
+def searchKDTree(points_query, metadata_address_kdtree, nr_nns_searches=1, metric=0, shuffled_inds=None, **kwargs):
     """Searches the specified KD-Tree for KNN of the given points
 
     Parameters
@@ -79,6 +79,8 @@ def searchKDTree(points_query, metadata_address_kdtree, nr_nns_searches=1, shuff
         Unique ID of the KD-Tree to be queried (see buildKDTree)
     nr_nns_searches : int, optional
         How many closest nearest neighbors will be queried (=k), by default 1
+    metric: int, optional
+        Which metric will be used to search for neighbors
     shuffled_inds : tensor or array of type int, optional
         When creating the tree using buildKDTree, this array is returned to map
         the indices from structured_points, back to the original indices.
@@ -94,7 +96,7 @@ def searchKDTree(points_query, metadata_address_kdtree, nr_nns_searches=1, shuff
         * inds (tensor of type int) : Indices of the K closest neighbors
     """
     dists, inds = _op_library.kd_tree_knn_search(points_query, metadata_address_kdtree=metadata_address_kdtree, 
-                nr_nns_searches=nr_nns_searches, **kwargs)
+                nr_nns_searches=nr_nns_searches, metric=metric, **kwargs)
 
     if shuffled_inds is not None:
         inds = tf.gather(shuffled_inds, tf.cast(inds, tf.int32))

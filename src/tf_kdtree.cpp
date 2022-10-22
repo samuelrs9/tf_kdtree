@@ -28,6 +28,7 @@ REGISTER_OP("KdTreeKnnSearch")
 	.Input("points_query: T")
 	.Attr("metadata_address_kdtree: int")
 	.Attr("nr_nns_searches: int = 1")
+	.Attr("metric: int = 0")
 	.Output("dist: T")
 	.Output("idx: uint32")
 		.SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c)
@@ -217,6 +218,7 @@ class KDTreeKNNSearchOp : public OpKernel{
 		{
             //std::cout << "Setting up KDTree Search..." << std::endl;
             OP_REQUIRES_OK(context, context->GetAttr("nr_nns_searches", &nr_nns_searches));
+			OP_REQUIRES_OK(context, context->GetAttr("metric", &metric));
             OP_REQUIRES_OK(context, context->GetAttr("metadata_address_kdtree", &part_nr));
             auto& partition_share = ternaryHelper<PartitionShareholder<T>, PartitionShareholder<float>, PartitionShareholder<double>>(partition_share_float, partition_share_double);
             dims = partition_share.getPartitionDims(part_nr);
@@ -266,19 +268,19 @@ class KDTreeKNNSearchOp : public OpKernel{
             {
 				KDTreeKNNSearch<T, T, 1>(*partition_share.template getPartition<PartitionInfo<T, 1>*>(part_nr), 
                 nr_query_points, reinterpret_cast<const std::array<T, 1>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else if(dims == 2)
             {
 				KDTreeKNNSearch<T, T, 2>(*partition_share.template getPartition<PartitionInfo<T, 2>*>(part_nr), 
                 nr_query_points, reinterpret_cast<const std::array<T, 2>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else if(dims == 3)
             {
 				KDTreeKNNSearch<T, T, 3>(*partition_share.template getPartition<PartitionInfo<T, 3>*>(part_nr), 
                 nr_query_points, reinterpret_cast<const std::array<T, 3>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else
 				throw std::runtime_error("Unsupported number of dimensions"); //TODO: Dynamic implementation
@@ -291,6 +293,7 @@ class KDTreeKNNSearchOp : public OpKernel{
 		//int nr_nns_searches;
 		std::tuple<int, const T*, T*, point_i_t*>  vars;
 		int nr_nns_searches = 20;
+		int metric = 0;
         int part_nr;
         int dims;
 };
@@ -378,24 +381,23 @@ class KDTreeKNNSearchGPUOp : public KDTreeKNNSearchOp<T>{
             {
 				KDTreeKNNGPUSearch<T, T, 1>(reinterpret_cast<PartitionInfoDevice<T, 1>*>(partition_info_d), 
                 nr_query_points, reinterpret_cast<const std::array<T, 1>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else if(dims == 2)
             {
 				KDTreeKNNGPUSearch<T, T, 2>(reinterpret_cast<PartitionInfoDevice<T, 2>*>(partition_info_d), 
                 nr_query_points, reinterpret_cast<const std::array<T, 2>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else if(dims == 3)
             {
 				KDTreeKNNGPUSearch<T, T, 3>(reinterpret_cast<PartitionInfoDevice<T, 3>*>(partition_info_d), 
                 nr_query_points, reinterpret_cast<const std::array<T, 3>*>(points_query), 
-                dist, knn_idx, nr_nns_searches);
+                dist, knn_idx, nr_nns_searches, metric);
             }
 			else
 				throw std::runtime_error("Unsupported number of dimensions"); //TODO: Dynamic implementation
             
-
             //std::copy(knn_idx.begin(), knn_idx.end(), idx_ret);
 		}
 
@@ -403,6 +405,7 @@ class KDTreeKNNSearchGPUOp : public KDTreeKNNSearchOp<T>{
 		//int nr_nns_searches;
 		using KDTreeKNNSearchOp<T>::vars;
 		using KDTreeKNNSearchOp<T>::nr_nns_searches;
+		using KDTreeKNNSearchOp<T>::metric;
         using KDTreeKNNSearchOp<T>::part_nr;
         using KDTreeKNNSearchOp<T>::dims;
 		//PartitionInfo<T, dims>* selected_partition;
